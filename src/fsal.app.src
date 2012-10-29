@@ -1,0 +1,15 @@
+%% -*- mode: erlang;erlang-indent-level: 4;indent-tabs-mode: nil -*-
+%% ex: ts=4 sw=4 et
+{application, fsal,
+ [
+  {description, "A File System Abstraction Layer"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  lhttpc,
+                  hackney
+                 ]},
+  {env, []}
+ ]}.
