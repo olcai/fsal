@@ -87,7 +87,7 @@ save() ->
 %% gen_server callbacks
 %% ===================================================================
 
--record(state, {table, filename, write_cont, read_cont}).
+-record(state, {table, filename, write_cont, read_cont, walked}).
 
 init(Args) ->
     erlang:process_flag(trap_exit, true),
@@ -99,19 +99,31 @@ init(Args) ->
     %% filenames is that we generally doesn't want to load and save to
     %% the same file.
     InputFilename = proplists:get_value(input_filename, Args),
-    Table = case ets:file2tab(InputFilename) of
-                {ok, Tab} ->
-                    Tab;
-                {error, _Reason} ->
-                    ets:new(?TABLE_NAME, [set, compressed])
-            end,
+    %% We set Walked to true if we're able to load the table since a
+    %% new walk will overwrite the old info.
+    {Table, Walked} =
+        case ets:file2tab(InputFilename) of
+            {ok, Tab} ->
+                {Tab, true};
+            {error, _Reason} ->
+                {ets:new(?TABLE_NAME, [set, compressed]), false}
+        end,
     {ok, #state{table=Table,
                 filename=Filename,
                 write_cont=none,
-                read_cont=none}}.
+                read_cont=none,
+                walked=Walked}}.
 
-handle_call({walk, Path}, _From, #state{table=Table}=State) ->
-    {reply, walk(Table, Path, Path), State};
+handle_call({walk, Path},
+            _From,
+            #state{table=Table, walked=Walked}=State) ->
+    %% Check if we've already walked the tree
+    case Walked of
+        true ->
+            {reply, ok, State};
+        false ->
+            {reply, walk(Table, Path, Path), State#state{walked=true}}
+    end;
 handle_call({insert_file, RelPath, FileName, Size, WriteFlag},
             _From,
             #state{table=Table}=State) ->
