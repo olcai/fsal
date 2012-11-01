@@ -13,7 +13,7 @@
 %% error conditions are not tested at all. Its purpose is to serve as a simple
 %% functional test of the API.
 api_test_() ->
-    Token = amazon_api:get_token("triino", 0, true, "73", "ODg="),
+    Token = amazon_api:get_token("triino", 0, true, "73", "ODg=", vhost),
     Bucket = "bucket",
     {foreach,
      fun() ->

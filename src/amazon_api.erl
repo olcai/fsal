@@ -28,7 +28,8 @@
                 port :: integer(),
                 ssl :: boolean(),
                 keyid :: string(),
-                secret :: string()
+                secret :: string(),
+                bucket_style :: path | vhost
                 }).
 -opaque token() :: #token{}.
 
@@ -58,7 +59,7 @@
 %% API function exports
 %% ===================================================================
 
--export([get_token/5,
+-export([get_token/6,
          put_object/5,
          put_object_sendfile/5,
          put_bucket/3,
@@ -88,8 +89,10 @@
 
 %% ------------------------------------------------------------------
 %% @doc
-%% Creates a record used in subsequent calls to the API with connection
-%% information. KeyID is the Amazon Key ID and Secret is the shared secret.
+%% Creates a record used in subsequent calls to the API with
+%% connection information. KeyID is the Amazon Key ID and Secret is
+%% the shared secret. BucketStyle indicates if we should use
+%% path-style or virtual-host-style access to buckets.
 %% 
 %% @end
 %% ------------------------------------------------------------------
@@ -97,10 +100,16 @@
                 Port :: integer(),
                 SSL :: boolean(),
                 KeyID :: string(),
-                Secret :: string()) ->
+                Secret :: string(),
+                BucketStyle :: path | vhost) ->
     token().
-get_token(Host, Port, SSL, KeyID, Secret) ->
-    #token{host=Host, port=Port, ssl=SSL, keyid=KeyID, secret=Secret}.
+get_token(Host, Port, SSL, KeyID, Secret, BucketStyle) ->
+    #token{host=Host,
+           port=Port,
+           ssl=SSL,
+           keyid=KeyID,
+           secret=Secret,
+           bucket_style=BucketStyle}.
 
 %% ------------------------------------------------------------------
 %% @doc
@@ -615,7 +624,8 @@ delete(Token = #token{}, Bucket, Resource, AwsHeaders) ->
                     Body :: iolist(),
                     Options :: [tuple()]) ->
     RequestRecord :: #request{}.
-build_request(#token{host=Host, port=Port, ssl=SSL, keyid=KeyID, secret=Secret},
+build_request(#token{host=Host, port=Port, ssl=SSL, keyid=KeyID, secret=Secret,
+                     bucket_style=BucketStyle},
               Bucket,
               Resource,
               Method,
@@ -646,16 +656,29 @@ build_request(#token{host=Host, port=Port, ssl=SSL, keyid=KeyID, secret=Secret},
     Hdrs = MoreAwsHeaders ++ RangeHeader ++ [{"date", Date},
                                              {"content-type", ContentType},
                                              {"Authorization", Auth}],
-    %% Use the newer virtual-host-style bucket access pattern
-    VirtualHost = case Bucket of
-                      "" -> Host;
-                      X -> X ++ "." ++ Host
-                  end,
+    %% See what bucket access pattern we should use
+    {VirtualHost, NewResource} =
+        case BucketStyle of
+            vhost ->
+                %% Use the newer virtual-host-style bucket access
+                %% pattern
+                {case Bucket of
+                     "" -> Host;
+                     X -> X ++ "." ++ Host
+                 end,
+                 Resource};
+            path ->
+                %% Use old-style path access
+                {Host, case Bucket of
+                           "" -> Resource;
+                           X -> "/" ++ X ++ Resource
+                       end}
+        end,
     %% Create the request record.
     #request{host=VirtualHost,
              port=Port,
              ssl=SSL,
-             resource=Resource,
+             resource=NewResource,
              method=Method,
              headers=Hdrs,
              body=Body,

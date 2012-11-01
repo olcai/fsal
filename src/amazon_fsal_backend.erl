@@ -29,7 +29,8 @@ init(Args) ->
     SSL = proplists:get_value(ssl, Args),
     KeyID = proplists:get_value(uid, Args),
     Secret = proplists:get_value(secret, Args),
-    Token = amazon_api:get_token(Host, Port, SSL, KeyID, Secret),
+    BStyle = proplists:get_value(bucket_style, Args),
+    Token = amazon_api:get_token(Host, Port, SSL, KeyID, Secret, BStyle),
     Bucket = proplists:get_value(bucket, Args),
     {ok, #state{token=Token, bucket=Bucket}}.
 
