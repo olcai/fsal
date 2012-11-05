@@ -69,6 +69,7 @@
          delete_bucket/2,
          get_object/5,
          get_object_metadata/3,
+         get_object_ignore_body/4,
          get_next/1
         ]).
 
@@ -327,6 +328,58 @@ get_object_metadata(Token = #token{}, Bucket, ObjectName) ->
 
 %% ------------------------------------------------------------------
 %% @doc
+%% Reads an object from S3, consumes the body but does not return
+%% it. Useful for benchmarking purposes and uses the HTTP client
+%% hackney instead of lhttpc. Use the Extent parameter for doing
+%% partial reads. It works as the HTTP Range header, so "5-15" will
+%% return byte five to fifteen of the object (inclusive). Things like
+%% "-10" also works (return the last ten bytes of the object). Set the
+%% Extent parameter to 'omit' for reading the whole object.
+%%
+%% Note: There is no support for multiple Extent ranges such as
+%% "5-15,49-78". If you use such ranges, the return value will be a
+%% non-parsed multipart message. You have been warned.
+%%
+%% @end
+%% ------------------------------------------------------------------
+-spec get_object_ignore_body(token(),
+                             Bucket :: string(),
+                             ObjectName :: string(),
+                             Extent :: string() | omit) ->
+    {file, Size :: integer() | [{string(), string() | list()}],
+     proplist(), proplist()} | error().
+get_object_ignore_body(Token = #token{}, Bucket, ObjectName, Extent) ->
+    case Extent of
+        omit -> Range = "";
+        Val -> Range = "bytes="++Val
+    end,
+    URL = "/"++ObjectName,
+    %% Define a function that reads the whole body from hackney, but
+    %% in the end just returns the size of the read boddy,
+    LoopFun = fun(Fun, Client1, AccSize) ->
+                      case hackney:stream_body(Client1) of
+                          {ok, Data, Client2} ->
+                              Fun(Fun, Client2, AccSize+byte_size(Data));
+                          {done, Client2} ->
+                              hackney:close(Client2),
+                              {ok, AccSize};
+                          Else -> Else
+                      end
+              end,
+    case get_hackney(Token, Bucket, URL, [], Range, true) of
+        {client, {{HTTPCode, _ReasonPhrase}, Headers, Client}}
+          when HTTPCode == 200; HTTPCode == 206 ->
+            {ok, Size} = LoopFun(LoopFun, Client, 0),
+            {file,
+             Size,
+             get_metadata_from_headers(Headers),
+             extract_headers(Headers, ["Etag", "Last-Modified"])};
+        Error ->
+            handle_errors(Error)
+    end.
+
+%% ------------------------------------------------------------------
+%% @doc
 %% Gets the next part of a chunked download. The Pid is given by the
 %% get_object function.
 %%
@@ -521,6 +574,19 @@ create_metadata_headers(Metadata) ->
                           ResponseBody :: binary() | undefined}} |
                     {error, connection_closed | connect_timeout | timeout}) ->
     error().
+handle_errors({client, {{StatusCode, ReasonPhrase}, Headers, Client}}) ->
+    %% This case handles errors from hackney when using a client.
+    case hackney:body(100000, Client) of
+        {ok, Body, Client1} ->
+            %% Ok, we've got a body. Reformat the response and call
+            %% handle_errors again.
+            hackney:close(Client1),
+            handle_errors({ok, {{StatusCode, ReasonPhrase},
+                                Headers, Body}});
+        {error, Reason} ->
+            hackney:close(Client),
+            handle_errors({error, Reason})
+    end;
 handle_errors({ok, {{StatusCode, ReasonPhrase}, _Headers, <<>>}}) ->
     %% This case is intended to handle standard HTTP return codes without any
     %% body.
@@ -568,6 +634,24 @@ get(Token = #token{}, Bucket, Resource, AwsHeaders, Range, Chunked) ->
                         [], Opts),
     send_request(Req).
     
+%% ------------------------------------------------------------------
+%% @doc
+%% Convenience wrapper for making HTTP GET requests to S3 using
+%% hackney. If Client is called with true, the hackney client will be
+%% returned instead of the standard response. The caller is expected to
+%% close the connection using hackney:close/1 when done.
+%%
+%% @end
+%% ------------------------------------------------------------------
+get_hackney(Token = #token{}, Bucket, Resource, AwsHeaders, Range, Client) ->
+    Opts = case Client of
+               false -> [];
+               true -> [return_client]
+           end,
+    Req = build_request(Token, Bucket, Resource, "GET", AwsHeaders, "", Range,
+                        [], Opts),
+    send_hackney_request(Req).
+
 %% ------------------------------------------------------------------
 %% @doc
 %% Convenience wrapper for making HTTP PUT requests to S3.
@@ -714,15 +798,17 @@ send_request(#request{} = Rec) ->
 %% @doc
 %% Send a request extracted from RequestRecord using hackney. This
 %% function is needed to decopule the actual sending from the building
-%% of a request (signing etc). Note that the timeout & options values
-%% are ignored when using hackney.
+%% of a request (signing etc). Note that the timeout & lhttpc options
+%% values are ignored when using hackney. If options contains the atom
+%% "return_client", the hackney client will be return instead of the
+%% full body. See inline comment below.
 %%
 %% @end
 %% ------------------------------------------------------------------
 -spec send_hackney_request(RequestRecord :: #request{}) ->
-    {ok, {{StatusCode :: integer(), ReasonPhrase :: string()},
-          Hdrs :: [header()],
-          ResponseBody :: binary()}} | 
+    {ok | client, {{StatusCode :: integer(), ReasonPhrase :: string()},
+                   Hdrs :: [header()],
+                   ResponseBody :: binary()}} |
     {error, Reason :: term()}.
 send_hackney_request(#request{} = Rec) ->
     Method = list_to_atom(string:to_lower(Rec#request.method)),
@@ -738,11 +824,24 @@ send_hackney_request(#request{} = Rec) ->
                   {Key, Val} <- Rec#request.headers ],
     case hackney:request(Method, URL, Headers, Rec#request.body) of
         {ok, StatusCode, RespHeaders, Client} ->
-            {ok, Body, Client1} = hackney:body(Client),
-            hackney:close(Client1),
-            StrHeaders = [ {binary_to_list(Key), binary_to_list(Val)} ||
-                             {Key, Val} <- RespHeaders ],
-            {ok, {{StatusCode, "not_given"}, StrHeaders, Body}};
+            %% Check if the atom return_client were given in options. If
+            %% so, return the client instead of the body. Note that it
+            %% is up to the caller to properly close the client using
+            %% hackney:close/1.
+            case [ X || X <- Rec#request.options, X == return_client ] of
+                [_X] ->
+                    StrHeaders =
+                        [ {binary_to_list(Key), binary_to_list(Val)} ||
+                            {Key, Val} <- RespHeaders ],
+                    {client,
+                     {{StatusCode, "not_given"}, StrHeaders, Client}};
+                [] ->
+                    {ok, Body, Client1} = hackney:body(Client),
+                    hackney:close(Client1),
+                    StrHeaders = [ {binary_to_list(Key), binary_to_list(Val)} ||
+                                     {Key, Val} <- RespHeaders ],
+                    {ok, {{StatusCode, "not_given"}, StrHeaders, Body}}
+            end;
         Error ->
             Error
     end.

@@ -23,7 +23,13 @@
 %% API function exports
 %% ===================================================================
 
--export([init/1, put/4, put_direct/4, get/3, move/5, delete/3]).
+-export([init/1,
+         put/4,
+         put_direct/4,
+         get/3,
+         get_ignore_body/3,
+         move/5,
+         delete/3]).
 
 %% ===================================================================
 %% API function definitions
@@ -85,6 +91,33 @@ get(Path, FileName, State) ->
     %% Note that we use the file server here...
     Ret = case file:read_file(Name) of
               {ok, Data} -> {file, Data};
+              Err -> Err
+          end,
+    {Ret, NState}.
+
+%% Returns {{file, Size}, State} | {{error, Reason}, State}
+get_ignore_body(Path, FileName, State) ->
+    {BP, NState} = get_basepath(State, FileName),
+    Name = filename_join([BP, Path, FileName]),
+    %% We use a fun here that loops and reads from the given IoDevice
+    %% in chunks.
+    LoopFun =
+        fun(Fun, IoDevice, Acc) ->
+                case file:read(IoDevice, 1000000) of
+                    {ok, Data} ->
+                        Fun(Fun, IoDevice, Acc+byte_size(Data));
+                    eof ->
+                        {file, Acc};
+                    Else ->
+                        Else
+                end
+        end,
+    %% Note that we use raw file access here
+    Ret = case file:open(Name, [read, raw, binary]) of
+              {ok, IoDevice} ->
+                  R = LoopFun(LoopFun, IoDevice, 0),
+                  file:close(IoDevice),
+                  R;
               Err -> Err
           end,
     {Ret, NState}.

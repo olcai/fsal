@@ -14,7 +14,13 @@
 %% API function exports
 %% ===================================================================
 
--export([init/1, put/4, put_direct/4, get/3, move/5, delete/3]).
+-export([init/1,
+         put/4,
+         put_direct/4,
+         get/3,
+         get_ignore_body/3,
+         move/5,
+         delete/3]).
 
 %% ===================================================================
 %% API function definitions
@@ -32,6 +38,10 @@ put_direct(Path, FileName, _SourceFile, State) ->
     {ok, State}.
 
 get(Path, FileName, State) ->
+    _Name = filename:join([Path, FileName]),
+    {ok, State}.
+
+get_ignore_body(Path, FileName, State) ->
     _Name = filename:join([Path, FileName]),
     {ok, State}.
 

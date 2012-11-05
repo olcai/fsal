@@ -14,7 +14,14 @@
 %% API function exports
 %% ===================================================================
 
--export([init/1, put/4, put_direct/4, get/3, move/5, delete/3, list/2]).
+-export([init/1,
+         put/4,
+         put_direct/4,
+         get/3,
+         get_ignore_body/3,
+         move/5,
+         delete/3,
+         list/2]).
 
 %% ===================================================================
 %% API function definitions
@@ -65,6 +72,16 @@ get(Path, FileName, #state{token=Token, bucket=Bucket}=State) ->
     %{file, Data, _Metadata, _Headers} =
     %    amazon_api:get_object(Token, Bucket, Name, false, omit) of
     {get_ns(Name, Token, Bucket), State}.
+
+%% This function fetches a file without returning the body. Useful for
+%% benchmarking purposes.
+get_ignore_body(Path,
+                FileName,
+                #state{token=Token, bucket=Bucket}=State) ->
+    Name = filename:join([Path, FileName]),
+    {file, Size, _Metadata, _Headers} =
+        amazon_api:get_object_ignore_body(Token, Bucket, Name, omit),
+    {{file, Size}, State}.
 
 %% TODO: Implement some kind of move operation (upload+delete?)
 move(_OldPath, _OldFileName, _NewPath, _NewFileName,

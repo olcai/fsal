@@ -22,6 +22,7 @@
          put/4,
          put_direct/4,
          get/3,
+         get_ignore_body/3,
          move/5,
          delete/3]).
 
@@ -69,6 +70,11 @@ put_direct(Path, FileName, SourceFile,
 get(Path, FileName,
     #state{bstate=BState, dispatcher=Dispatcher}=State) ->
     {Ret, NBState} = Dispatcher:get(Path, FileName, BState),
+    {ok, Ret, State#state{bstate=NBState}}.
+
+get_ignore_body(Path, FileName,
+                #state{bstate=BState, dispatcher=Dispatcher}=State) ->
+    {Ret, NBState} = Dispatcher:get_ignore_body(Path, FileName, BState),
     {ok, Ret, State#state{bstate=NBState}}.
 
 move(OldPath, OldFileName, NewPath, NewFileName,
