@@ -646,7 +646,7 @@ get(Token = #token{}, Bucket, Resource, AwsHeaders, Range, Chunked) ->
 get_hackney(Token = #token{}, Bucket, Resource, AwsHeaders, Range, Client) ->
     Opts = case Client of
                false -> [];
-               true -> [return_client]
+               true -> [{return_client, true}]
            end,
     Req = build_request(Token, Bucket, Resource, "GET", AwsHeaders, "", Range,
                         [], Opts),
@@ -758,6 +758,14 @@ build_request(#token{host=Host, port=Port, ssl=SSL, keyid=KeyID, secret=Secret,
                            X -> "/" ++ X ++ Resource
                        end}
         end,
+    %% See if Options contain any connect_options. If not, set some
+    %% useful defaults such as reuseaddr which will reuse ports while
+    %% they are in TIME_WAIT.
+    NewOpts =
+        case lists:keyfind(connect_options, 1, Options) of
+            {connect_optons, _Lst} -> Options;
+            false -> Options++[{connect_options, [{reuseaddr, true}]}]
+        end,
     %% Create the request record.
     #request{host=VirtualHost,
              port=Port,
@@ -767,7 +775,7 @@ build_request(#token{host=Host, port=Port, ssl=SSL, keyid=KeyID, secret=Secret,
              headers=Hdrs,
              body=Body,
              timeout=?TIMEOUT,
-             options=Options}.
+             options=NewOpts}.
 
 %% ------------------------------------------------------------------
 %% @doc
@@ -822,20 +830,29 @@ send_hackney_request(#request{} = Rec) ->
                                Rec#request.resource),
     Headers = [ {iolist_to_binary(Key), iolist_to_binary(Val)} ||
                   {Key, Val} <- Rec#request.headers ],
-    case hackney:request(Method, URL, Headers, Rec#request.body) of
+    %% Get the return_client tuple if it exists in options, and remove
+    %% it in that case from the options we give to hackney.
+    {Opts, ReturnClient} =
+        case lists:keyfind(return_client, 1, Rec#request.options) of
+            {return_client, Bool} ->
+                {lists:keydelete(return_client, 1, Rec#request.options),
+                 Bool};
+            false ->
+                {Rec#request.options, false}
+        end,
+    case hackney:request(Method, URL, Headers, Rec#request.body, Opts) of
         {ok, StatusCode, RespHeaders, Client} ->
-            %% Check if the atom return_client were given in options. If
-            %% so, return the client instead of the body. Note that it
-            %% is up to the caller to properly close the client using
-            %% hackney:close/1.
-            case [ X || X <- Rec#request.options, X == return_client ] of
-                [_X] ->
+            %% Check if we should return the client to the caller
+            %% instead of the body. Note that it is up to the caller
+            %% to properly close the client using hackney:close/1.
+            case ReturnClient of
+                true ->
                     StrHeaders =
                         [ {binary_to_list(Key), binary_to_list(Val)} ||
                             {Key, Val} <- RespHeaders ],
                     {client,
                      {{StatusCode, "not_given"}, StrHeaders, Client}};
-                [] ->
+                false ->
                     {ok, Body, Client1} = hackney:body(Client),
                     hackney:close(Client1),
                     StrHeaders = [ {binary_to_list(Key), binary_to_list(Val)} ||
