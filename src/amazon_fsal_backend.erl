@@ -79,8 +79,23 @@ get_ignore_body(Path,
                 FileName,
                 #state{token=Token, bucket=Bucket}=State) ->
     Name = filename:join([Path, FileName]),
-    {file, Size, _Metadata, _Headers} =
-        amazon_api:get_object_ignore_body(Token, Bucket, Name, omit),
+    %% Originally we used the out-commented code here so that Hackney
+    %% was used for getting without the body. Hackney was slow with
+    %% SSL (probably due to me not using its socket pool), so we
+    %% instead use the support for chunked downloads by lhttpc.
+    %{file, Size, _Metadata, _Headers} = %
+    %% amazon_api:get_object_ignore_body(Token, Bucket, Name, omit),
+    {file, Pid, _Metadata, _Headers} =
+        amazon_api:get_object(Token, Bucket, Name, true, omit),
+    %% Loop over get_next and sum up the bytes returned.
+    LoopFun =
+        fun(Func, Acc) ->
+                case amazon_api:get_next(Pid) of
+                    {ok, final} -> Acc;
+                    {ok, BodyPart} -> Func(Func, Acc+size(BodyPart))
+                end
+        end,
+    Size = LoopFun(LoopFun, 0),
     {{file, Size}, State}.
 
 %% TODO: Implement some kind of move operation (upload+delete?)
